@@ -1,0 +1,181 @@
+# 节点由 proxy-providers.ssrdog 拉取；换订阅只改 secrets.yaml 中对应 url
+# 分流意图：IP/风控敏感（AI、检测站、DNS 上游）→ CHAIN-PROXY-US（仅美国住宅出口）；CHAIN-PROXY-DE / CHAIN-PROXY 可在 FINAL 手动选（仅德 / 美德四链）；流媒体等 → 各 RULE-SET 组（默认 SSRDOG）；其余 → MATCH MYPROXY
+# 敏感项（secret、订阅 URL、住宅 SOCKS、订阅域名规则）见 secrets.yaml，部署时由 merge_config.py 合并
+
+external-controller: 0.0.0.0:9090
+external-ui: /var/lib/mihomo/ui
+
+tun:
+  enable: true
+  stack: system
+  mtu: 1400
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+  auto-route: true
+  auto-detect-interface: true
+  strict-route: true
+  force-dns-mapping: true
+
+mixed-port: 7890
+allow-lan: true
+bind-address: "*"
+mode: rule
+log-level: info
+ipv6: false
+
+profile:
+  store-selected: true
+  tracing: false
+  store-fake-ip: false
+
+unified-delay: true
+
+hosts:
+  localhost.localhost: 127.0.0.1
+
+dns:
+  enable: true
+  ipv6: false
+  respect-rules: true
+  listen: "0.0.0.0:1053"
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  use-hosts: true
+  default-nameserver: [1.1.1.1, 8.8.8.8]
+  nameserver: [https://dns.alidns.com/dns-query, https://doh.pub/dns-query, https://cloudflare-dns.com/dns-query, https://dns.google/dns-query]
+  proxy-server-nameserver: [1.1.1.1, 8.8.8.8]
+  fake-ip-filter: ["*.lan", localhost.ptlogin2.qq.com, dns.msftncsi.com, "*.srv.nintendo.net", "*.stun.playstation.net", "xbox.*.microsoft.com", "*.xboxlive.com"]
+  fallback: [https://cloudflare-dns.com/dns-query, https://dns.google/dns-query, https://dns.alidns.com/dns-query, https://doh.pub/dns-query]
+  fallback-filter: { geoip: false, ipcidr: [240.0.0.0/4] }
+
+sniffer:
+  enable: true
+  parse-pure-ip: true
+  override-destination: true
+  sniff:
+    TLS:
+      ports: [443, 8443]
+    HTTP:
+      ports: [80, 8080-8880]
+
+proxy-providers:
+  ssrdog:
+    type: http
+    interval: 43200
+    path: ./providers/ssrdog.yaml
+    health-check:
+      enable: true
+      url: http://cp.cloudflare.com/generate_204
+      interval: 600
+    header:
+      User-Agent:
+        - ClashforWindows/0.20.39
+      Accept:
+        - "*/*"
+  myproxy:
+    type: http
+    interval: 43200
+    path: ./providers/myai.yaml
+    health-check:
+      enable: true
+      url: http://cp.cloudflare.com/generate_204
+      interval: 600
+    header:
+      User-Agent:
+        - ClashforWindows/0.20.39
+      Accept:
+        - "*/*"
+
+proxy-groups:
+  - name: SSRDOG
+    type: url-test
+    use:
+      - ssrdog
+    url: "http://cp.cloudflare.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: MYPROXY
+    type: url-test
+    use:
+      - myproxy
+    url: "http://cp.cloudflare.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: BiliBili
+    type: select
+    proxies: [DIRECT, SSRDOG]
+
+  - name: YouTube
+    type: select
+    proxies: [MYPROXY, SSRDOG]
+
+  - name: CHAIN-PROXY-US
+    type: url-test
+    proxies:
+      - HOME-SOCKS5-US
+      - HOME-SOCKS5-SSRDOG-US
+    url: "http://cp.cloudflare.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+    hidden: true
+
+  - name: CHAIN-PROXY-DE
+    type: url-test
+    proxies:
+      - HOME-SOCKS5-DE
+      - HOME-SOCKS5-SSRDOG-DE
+    url: "http://cp.cloudflare.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+    hidden: true
+
+  - name: CHAIN-PROXY
+    type: select
+    proxies:
+      - HOME-SOCKS5-US
+      - HOME-SOCKS5-SSRDOG-US
+      - HOME-SOCKS5-DE
+      - HOME-SOCKS5-SSRDOG-DE
+
+  - name: FINAL
+    type: select
+    proxies: [MYPROXY, SSRDOG, CHAIN-PROXY-US, CHAIN-PROXY-DE, DIRECT]
+
+rule-providers:
+  DIRECT: { type: file, behavior: classical, path: ./ruleset/DIRECT.yml }
+  REJECT: { type: file, behavior: classical, path: ./ruleset/REJECT.yml }
+  DNS_DIRECT: { type: file, behavior: classical, path: ./ruleset/DNS_DIRECT.yml }
+  DNS_PROXY: { type: file, behavior: classical, path: ./ruleset/DNS_PROXY.yml }
+  Chatgpt: { type: file, behavior: classical, path: ./ruleset/Chatgpt.yml }
+  Claude: { type: file, behavior: classical, path: ./ruleset/Claude.yml }
+  Gemini: { type: file, behavior: classical, path: ./ruleset/Gemini.yml }
+  Google: { type: file, behavior: classical, path: ./ruleset/Google.yml }
+  Grok: { type: file, behavior: classical, path: ./ruleset/Grok.yml }
+  YouTube: { type: file, behavior: classical, path: ./ruleset/YouTube.yml }
+  ChinaMax: { type: file, behavior: classical, path: ./ruleset/ChinaMax.yml }
+rules:
+
+  - "DOMAIN,dog.ssrdog.com,SSRDOG"
+  - "RULE-SET,REJECT,REJECT"
+  - "RULE-SET,DNS_DIRECT,DIRECT"
+  - "RULE-SET,DNS_PROXY,CHAIN-PROXY"
+  - "RULE-SET,Claude,CHAIN-PROXY-US"
+  - "RULE-SET,Chatgpt,CHAIN-PROXY-US"
+  - "RULE-SET,Gemini,CHAIN-PROXY-US"
+  - "RULE-SET,Google,CHAIN-PROXY-US"
+  - "RULE-SET,Grok,CHAIN-PROXY-US"
+  - "DOMAIN-SUFFIX,bilibili.com,BiliBili"
+  - "DOMAIN-SUFFIX,hdslb.com,BiliBili"
+  - "DOMAIN-SUFFIX,biliapi.net,BiliBili"
+  - "DOMAIN-SUFFIX,bilivideo.com,BiliBili"
+  - "RULE-SET,YouTube,YouTube"
+  - "RULE-SET,DIRECT,DIRECT"
+  - "RULE-SET,ChinaMax,DIRECT"
+  - "MATCH,FINAL"
