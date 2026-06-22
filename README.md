@@ -16,18 +16,20 @@
 | [五、规则与规则集](#五规则与规则集) | [5. Rules and rule providers](#5-rules-and-rule-providers-en)             |
 | [六、部署与重载](#六部署与重载)   | [6. Deployment and reload](#6-deployment-and-reload-en)                   |
 | [七、运维与排错](#七运维与排错)   | [7. Operations and troubleshooting](#7-operations-and-troubleshooting-en) |
+| [八、多区域 DNS 对齐](#八多区域-dns-对齐) | [8. Multi-region DNS](#8-multi-region-dns-en)                             |
+| [九、VPS 邮件中转](#九vps-邮件中转) | —                                                                         |
 
 
 ---
 
 ## 一、概述
 
-本配置用于在 **Linux** 上以 **TUN 模式**运行 Mihomo：`ssrdog.src.yaml` 为可提交的模板，部署时与 `secrets.yaml` 合并为运行时配置；节点来自两个 **proxy-provider**（SSRDOG 订阅与本地 MYPROXY 订阅）；部分敏感流量走 **住宅 SOCKS5 链式代理**（美国 / 德国出口，分别经 MYPROXY 或 SSRDOG 作为第一层）。
+本配置用于在 **Linux** 上以 **TUN 模式**运行 Mihomo：`ssrdog.src.yaml` 为可提交的模板，部署时与 `secrets.yaml` 合并为运行时配置；节点来自 **proxy-provider**（SSRDOG、US、JP 订阅）；部分敏感流量走 **住宅 SOCKS5 链式代理**（美国 / 日本 / 德国等区域出口，分别经 US 或 SSRDOG 作为第一层）。
 
 设计目标包括：
 
-- **分流**：国内大量域名走直连（`ChinaMax`、`DIRECT` 规则集）；AI / Google 系等走美国住宅链；哔哩哔哩 / YouTube 可选手动策略；其余走 `FINAL`。
-- **DNS**：Fake-IP + `respect-rules`，并对订阅域名使用国内 DNS 解析（`nameserver-policy`）。
+- **分流**：国内大量域名走直连（`ChinaMax`、`DIRECT` 规则集）；各区域域名走对应 `CHAIN-PROXY-{REGION}`；AI / Google 系等走美国住宅链；哔哩哔哩 / YouTube 可选手动策略；其余走 `FINAL`。
+- **DNS 与代理出口对齐**：普通境外 DNS 走面板 **`DNS-REGION`**（与 `FINAL` 所选区域链手动同步）；AI 固定 `#CHAIN-PROXY-US`。详见 [docs/multi-region-dns.md](docs/multi-region-dns.md)。
 - **嗅探**：对 TLS/HTTP 端口嗅探，便于日志与策略基于域名。
 
 ---
@@ -43,8 +45,12 @@
 | `secrets.yaml`                                  | 本地密钥（**勿提交**，已在 `.gitignore`）       |
 | `merge_config.py`                               | 合并 `ssrdog.src.yaml` + `secrets.yaml` |
 | `ruleset/*.yml`                                 | Classical 规则集（文件型 rule-provider） |
-| `providers/ssrdog.yaml` / `providers/myai.yaml` | 由 Mihomo 从订阅拉取后写入（路径在配置中定义）      |
+| `providers/ssrdog.yaml` / `providers/us.yaml` / `providers/jp.yaml` | 由 Mihomo 从订阅拉取后写入（路径在配置中定义）      |
 | `yaml.sh`                                       | 将配置与规则集同步到系统目录并重启服务              |
+| `scripts/vps-smtp-relay.sh`                     | 在海外 VPS 上部署 Postfix 邮件中转（Gmail 发信）   |
+| `docs/multi-region-dns.md`                      | 多区域出口与 DNS 对齐架构说明                   |
+| `docs/smtp-relay.md`                            | 邮件中转安装、客户端配置与排错说明                 |
+| `ruleset/PROXY-JP.yml` / `PROXY-DE.yml`         | 非默认区域域名（可留空；流量与 DNS 共用）           |
 | `backup_ssrdog.yaml`                            | 脚本生成的备份（若存在）                     |
 
 
@@ -70,9 +76,9 @@
 ### 3.3 DNS
 
 - `**enhanced-mode: fake-ip**`，`fake-ip-range: 198.18.0.1/16`。
-- `**respect-rules: true**`：解析行为随路由规则，便于分流一致。
-- `**nameserver-policy**`：对订阅相关域名指定国内 DNS（域名写在 `secrets.yaml`），避免解析异常。
-- `**listen: 0.0.0.0:1053**`：DNS 监听地址与端口。
+- `**nameserver-policy**`：国内走国内 DoH；AI 固定 `#CHAIN-PROXY-US`；其余境外域名走 **`#DNS-REGION`**（面板选择与出口区域一致）。
+- `**default-nameserver**` / `**proxy-server-nameserver**`：国内 IP，用于引导解析与节点域名。
+- `**listen: 0.0.0.0:1053**`：DNS 监听地址与端口。完整架构见 [docs/multi-region-dns.md](docs/multi-region-dns.md)。
 
 ### 3.4 Sniffer
 
@@ -94,7 +100,8 @@
 | 名称            | 作用                                            |
 | ------------- | --------------------------------------------- |
 | `**ssrdog**`  | HTTP 订阅，拉取 SSRDOG 节点；健康检查 `generate_204`      |
-| `**myproxy**` | HTTP 订阅（示例 URL 指向本机 `127.0.0.1:3001`，需自备订阅服务） |
+| `**us**` | HTTP 订阅（Statry 等）；健康检查 `generate_204`              |
+| `**jp**`      | 日本 VLESS 订阅（URL 在 `secrets.yaml`）；健康检查 `generate_204` |
 
 
 更新周期、路径 `./providers/*.yaml` 与 `User-Agent` 等在 `ssrdog.yaml` 内可改；**订阅 URL** 在 `secrets.yaml`。
@@ -105,18 +112,20 @@
 | 名称                   | 类型       | 说明                                                                                            |
 | -------------------- | -------- | --------------------------------------------------------------------------------------------- |
 | `**SSRDOG**`         | url-test | 使用 `ssrdog` provider 中节点，自动测速选优                                                               |
-| `**MYPROXY**`        | url-test | 使用 `myproxy` provider 中节点，自动测速选优                                                              |
+| `**US**`        | url-test | 使用 `us` provider 中节点，自动测速选优                                                              |
 | `**BiliBili**`       | select   | 哔哩哔哩：`DIRECT` / `SSRDOG`                                                                      |
-| `**YouTube**`        | select   | YouTube：`MYPROXY` / `SSRDOG`                                                                  |
-| `**CHAIN-PROXY-US**` | url-test | 美国住宅 SOCKS5 二选一：`HOME-SOCKS5-US`（经 MYPROXY）与 `HOME-SOCKS5-SSRDOG-US`（经 SSRDOG）；`hidden: true` |
+| `**YouTube**`        | select   | YouTube：`US` / `SSRDOG`                                                                  |
+| `**CHAIN-PROXY-US**` | url-test | 美国住宅 SOCKS5 二选一；`hidden: true`                                                                |
+| `**JP**`             | url-test | 日本 VLESS 订阅（`jp` provider）                                      |
+| `**CHAIN-PROXY-JP**` | url-test | 日本出口；当前为 `JP` 订阅节点，可扩展住宅 SOCKS                         |
 | `**CHAIN-PROXY-DE**` | url-test | 德国住宅 SOCKS5 二选一；`hidden: true`                                                                |
-| `**CHAIN-PROXY**`    | select   | 四条住宅链手动选择（美×2 + 德×2）                                                                          |
-| `**FINAL**`          | select   | 默认兜底：`MYPROXY`、`SSRDOG`、`CHAIN-PROXY-US`、`CHAIN-PROXY-DE`、`DIRECT`                            |
+| `**DNS-REGION**`      | select   | 境外默认 DNS 出口，选 US/JP/DE 住宅链；**需与 FINAL 区域选择同步**     |
+| `**FINAL**`          | select   | 默认兜底：`US`、`SSRDOG`、各 `CHAIN-PROXY-*`、`DIRECT`            |
 
 
 ### 4.3 链式代理（住宅 SOCKS5）
 
-每条 `**HOME-SOCKS5-***` 为 **SOCKS5**，通过 `**dialer-proxy`** 先连入 `MYPROXY` 或 `SSRDOG`，再连住宅 IP，形成 **代理链**。节点与认证信息在 `secrets.yaml` 维护。
+每条 `**HOME-SOCKS5-***` 为 **SOCKS5**，通过 `**dialer-proxy`** 先连入 `US` 或 `SSRDOG`，再连住宅 IP，形成 **代理链**。节点与认证信息在 `secrets.yaml` 维护。
 
 ---
 
@@ -130,17 +139,16 @@
 | `DOMAIN,dog.ssrdog.com`                      | SSRDOG         | 订阅相关域名                                  |
 | `DOMAIN-SUFFIX,<订阅域名>`（见 `secrets.yaml`） | DIRECT         | 订阅下载域名直连                                |
 | `RULE-SET,REJECT`                            | REJECT         | 拦截列表                                    |
-| `RULE-SET,DNS_DIRECT`                        | DIRECT         | DNS 直连列表                                |
-| `RULE-SET,DNS_PROXY`                         | CHAIN-PROXY    | DNS 需代理列表（当前指向四链 `select` 组）            |
+| `RULE-SET,PROXY-JP/DE`                       | CHAIN-PROXY-*  | 非默认区域（rule-set 有域名时才生效）              |
 | `RULE-SET,Claude/Chatgpt/Gemini/Google/Grok` | CHAIN-PROXY-US | AI / Google 系等走美国住宅链（自动测速二选一）           |
 | `DOMAIN-SUFFIX,bilibili.com` 等               | BiliBili       | 哔哩哔哩可选手动选 DIRECT 或 SSRDOG（优先于 ChinaMax） |
-| `RULE-SET,YouTube`                           | YouTube        | 由 `YouTube` 策略组再选 MYPROXY 或 SSRDOG      |
+| `RULE-SET,YouTube`                           | YouTube        | 由 `YouTube` 策略组再选 US 或 SSRDOG      |
 | `RULE-SET,DIRECT`                            | DIRECT         | 自定义直连（含 `GEOIP,CN` 等，以 `DIRECT.yml` 为准） |
 | `RULE-SET,ChinaMax`                          | DIRECT         | 大陆域名 / IP 大表                            |
 | `MATCH`                                      | FINAL          | 其余走 `FINAL`                             |
 
 
-若需 **DNS 也走美国住宅链**，可将 `DNS_PROXY` 的策略从 `CHAIN-PROXY` 改为 `CHAIN-PROXY-US`（或你期望的组），与 AI 规则保持一致。
+各区域 DNS 默认与美国出口对齐；仅 `PROXY-JP/DE` 中的域名走例外。详见 [docs/multi-region-dns.md](docs/multi-region-dns.md)。
 
 ### 5.2 规则集文件（`ruleset/`）
 
@@ -149,8 +157,8 @@
 | ----------------------------------------------------------------------- | ----------------------------------------------------- |
 | `DIRECT.yml`                                                            | 教育网关键词、局域网、自定义直连等                                     |
 | `REJECT.yml`                                                            | 广告或屏蔽                                                 |
-| `DNS_DIRECT.yml` / `DNS_PROXY.yml`                                      | DNS 分流列表                                              |
-| `Chatgpt.yml` / `Claude.yml` / `Gemini.yml` / `Google.yml` / `Grok.yml` | 各服务域名                                                 |
+| `PROXY-JP.yml` / `PROXY-DE.yml`                                         | 非默认区域出口域名（可选，可留空）                                  |
+| `Chatgpt.yml` / `Claude.yml` 等                                           | AI 服务域名；DNS 由默认 `#CHAIN-PROXY-US` 覆盖，无需单独列举       |
 | `YouTube.yml`                                                           | YouTube 相关域名 / 关键字 / IP（含 `DOMAIN-KEYWORD,youtube` 等） |
 | `ChinaMax.yml`                                                          | 大陆分流大表（体积较大，首次部署由 `yaml.sh` 自动拉取；设 `UPDATE_CHINAMAX=1` 可强制更新） |
 
@@ -176,7 +184,8 @@ pip install -r requirements.txt   # 或依赖系统 python3-yaml / PyYAML
 5. 将 `ruleset/*.yml` 同步到 `/var/lib/mihomo/ruleset/`
 6. 修正属主为 `mihomo` 用户
 7. `systemctl restart mihomo`
-8. 在仓库内写入 `ssrdog.yaml` 供本地查看（已 gitignore）
+8. 若 `/var/lib/mihomo/GeoSite.dat` 缺失或不完整（GitHub 下载超时），`yaml.sh` 会从 `geodata/GeoSite.dat` 或 `~/.config/mihomo/GeoSite.dat` 复制；也可单独执行 `bash scripts/fix-geosite-and-restart.sh`
+9. 在仓库内写入 `ssrdog.yaml` 供本地查看（已 gitignore）
 
 请在仓库根目录执行（需 sudo）：
 
@@ -197,16 +206,39 @@ bash yaml.sh
 
 ---
 
+## 八、多区域 DNS 对齐
+
+**默认**：普通境外 DNS 经面板 **`DNS-REGION`** 发出；切换德国/日本出口时，**同步把 `DNS-REGION` 切成同一链**。AI 域名 DNS 固定美国。
+
+**例外**：`PROXY-JP/DE.yml` 可强制特定域名走某区域（可留空）。
+
+详见 **[docs/multi-region-dns.md](docs/multi-region-dns.md)**。
+
+---
+
+## 九、VPS 邮件中转
+
+Gmail 的 SMTP（587/465）在国内直连及多数代理链路上不可用。可在海外 VPS 上部署 Postfix，由邮件客户端把**发信**提交到 VPS，再由 VPS 转发到 `smtp.gmail.com`；**收件 IMAP 仍走 Gmail 官方**。
+
+完整说明见 **[docs/smtp-relay.md](docs/smtp-relay.md)**，包括：
+
+- 一键安装：`scripts/vps-smtp-relay.sh`
+- 中继密码 vs Google 应用专用密码
+- Thunderbird 等客户端填法
+- 535 认证失败、chroot、防火墙等排错
+
+---
+
 # English sections
 
 ## 1. Overview {#1-overview-en}
 
-This setup runs **Mihomo** on **Linux** with **TUN** enabled. `ssrdog.src.yaml` is the public template; deployment merges it with `secrets.yaml` into the runtime config. Outbound nodes come from two **proxy providers** (SSRDOG subscription and a local MYPROXY subscription). Sensitive traffic can use **residential SOCKS5 chains** (US / DE exit), each chained through either **MYPROXY** or **SSRDOG** as the first hop.
+This setup runs **Mihomo** on **Linux** with **TUN** enabled. `ssrdog.src.yaml` is the public template; deployment merges it with `secrets.yaml` into the runtime config. Outbound nodes come from two **proxy providers** (SSRDOG subscription and a local US subscription). Sensitive traffic can use **residential SOCKS5 chains** (US / JP / DE regional exits), each chained through either **US** or **SSRDOG** as the first hop.
 
 Goals:
 
-- **Routing**: large China domain lists go **DIRECT** (`ChinaMax`, `DIRECT`); AI / Google-related traffic uses the **US residential chain**; YouTube uses the `**YouTube`** selector; everything else hits `**MATCH` → `FINAL**`.
-- **DNS**: Fake-IP with `**respect-rules`**, plus `**nameserver-policy**` for subscription hostnames.
+- **Routing**: China domain lists go **DIRECT**; regional domains use `**CHAIN-PROXY-{REGION}**`; AI / Google traffic uses the **US residential chain**; YouTube uses the `**YouTube`** selector; everything else hits `**MATCH` → `FINAL**`.
+- **DNS alignment**: foreign DNS uses panel group **`DNS-REGION`** — switch it to match your `FINAL` regional chain; AI DNS stays on `#CHAIN-PROXY-US`. See [docs/multi-region-dns.md](docs/multi-region-dns.md).
 - **Sniffer**: TLS/HTTP sniffing for better domain visibility in logs and rule matching.
 
 ---
@@ -224,7 +256,7 @@ Goals:
 | `requirements.txt`                             | Python deps for `merge_config.py` (`PyYAML`)                 |
 | `ruleset/*.yml`                                | Classical rule-set files                                     |
 | `ruleset/ChinaMax.yml`                         | Large CN list; auto-fetched by `yaml.sh` if missing          |
-| `providers/ssrdog.yaml`, `providers/myai.yaml` | Fetched and written by Mihomo (paths defined in config)        |
+| `providers/ssrdog.yaml`, `providers/us.yaml`, `providers/jp.yaml` | Fetched and written by Mihomo (paths defined in config)        |
 | `yaml.sh`                                      | Copies config + rules to system paths and restarts the service |
 
 
@@ -236,7 +268,7 @@ Rule providers reference `**./ruleset/...`**. The Mihomo working directory must 
 
 - **API / UI**: `external-controller` on `9090`, `secret` for auth, `external-ui` path must exist on the target machine.
 - **TUN**: system stack, auto routing, strict routing, forced DNS mapping; tune `mtu` if needed.
-- **DNS**: fake-ip pool `198.18.0.0/16`, DoH upstreams, policy for specific subscription suffixes.
+- **DNS**: fake-ip pool `198.18.0.0/16`; `nameserver-policy` binds each `rule-set:PROXY-{REGION}` to `#CHAIN-PROXY-{REGION}`; CN traffic uses domestic DoH `#DIRECT`. See [docs/multi-region-dns.md](docs/multi-region-dns.md).
 - **Sniffer**: TLS (443/8443) and HTTP (80/8080–8880); `override-destination` affects how domains are matched.
 - **Mode**: `rule`; IPv6 disabled globally in this file unless you change it.
 
@@ -244,9 +276,8 @@ Rule providers reference `**./ruleset/...`**. The Mihomo working directory must 
 
 ## 4. Proxies and policy groups {#4-proxies-and-policy-groups-en}
 
-- `**SSRDOG` / `MYPROXY`**: `url-test` groups backed by `**proxy-providers**` with health checks to Cloudflare `generate_204`.
-- `**CHAIN-PROXY-US` / `CHAIN-PROXY-DE**`: `url-test` over two SOCKS5 hops each (via `MYPROXY` vs `SSRDOG`); `**hidden: true**` hides them from some UIs but they remain usable in rules.
-- `**CHAIN-PROXY**`: manual `select` across all four residential chains.
+- `**SSRDOG` / `US`**: `url-test` groups backed by `**proxy-providers**` with health checks to Cloudflare `generate_204`.
+- `**CHAIN-PROXY-US` / `CHAIN-PROXY-JP` / `CHAIN-PROXY-DE**`: `url-test` over two SOCKS5 hops each (via `US` vs `SSRDOG`); `**hidden: true**` hides them from some UIs but they remain usable in rules.
 - `**FINAL**`: user-selectable fallback for `MATCH` traffic.
 
 Residential SOCKS entries use `**dialer-proxy**` to build **proxy chains**. Keep credentials in `secrets.yaml` (gitignored).
@@ -258,8 +289,8 @@ Residential SOCKS entries use `**dialer-proxy**` to build **proxy chains**. Keep
 Rules are evaluated **top to bottom**. Highlights:
 
 - Subscription helper domains → `**SSRDOG`** or **DIRECT** as written.
+- `**PROXY-JP/DE**` rule-sets → matching chains when populated; default foreign DNS uses `**#CHAIN-PROXY-US**` without per-site lists.
 - AI / Google rule-sets → `**CHAIN-PROXY-US`** (auto fastest chain).
-- `**DNS_PROXY**` → `**CHAIN-PROXY**` in the current file (a **select** group with four chains). Change to `**CHAIN-PROXY-US`** if you want DNS proxy traffic aligned with the US-only chain.
 - `**ChinaMax` / `DIRECT**` → **DIRECT** for CN-oriented lists.
 - `**MATCH`** → `**FINAL**`.
 
@@ -296,6 +327,12 @@ bash yaml.sh
 - `**RuleSet` / `Chains**` in the UI explain which rule matched and which outbound path was used.
 - `**198.18.0.0/16**` sources are typical with fake-ip.
 - Rotate subscriptions and SOCKS credentials in `**secrets.yaml**` only; avoid publishing secrets.
+
+---
+
+## 8. Multi-region DNS {#8-multi-region-dns-en}
+
+Regional DNS uses **`DNS-REGION`** (manual sync with `FINAL`); AI DNS stays US. Details: **[docs/multi-region-dns.md](docs/multi-region-dns.md)**.
 
 ---
 

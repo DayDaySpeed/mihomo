@@ -1,5 +1,5 @@
 # 节点由 proxy-providers.ssrdog 拉取；换订阅只改 secrets.yaml 中对应 url
-# 分流意图：IP/风控敏感（AI、检测站、DNS 上游）→ CHAIN-PROXY-US（仅美国住宅出口）；CHAIN-PROXY-DE / CHAIN-PROXY 可在 FINAL 手动选（仅德 / 美德四链）；流媒体等 → 各 RULE-SET 组（默认 SSRDOG）；其余 → MATCH MYPROXY
+# 多区域架构：rule-set 统一分类，流量与 DNS 共用 PROXY-{REGION} → CHAIN-PROXY-{REGION}；详见 docs/multi-region-dns.md
 # 敏感项（secret、订阅 URL、住宅 SOCKS、订阅域名规则）见 secrets.yaml，部署时由 merge_config.py 合并
 
 external-controller: 0.0.0.0:9090
@@ -27,7 +27,7 @@ ipv6: false
 profile:
   store-selected: true
   tracing: false
-  store-fake-ip: false
+  store-fake-ip: true
 
 unified-delay: true
 
@@ -42,12 +42,28 @@ dns:
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   use-hosts: true
-  default-nameserver: [1.1.1.1, 8.8.8.8]
-  nameserver: [https://dns.alidns.com/dns-query, https://doh.pub/dns-query, https://cloudflare-dns.com/dns-query, https://dns.google/dns-query]
-  proxy-server-nameserver: [1.1.1.1, 8.8.8.8]
-  fake-ip-filter: ["*.lan", localhost.ptlogin2.qq.com, dns.msftncsi.com, "*.srv.nintendo.net", "*.stun.playstation.net", "xbox.*.microsoft.com", "*.xboxlive.com"]
-  fallback: [https://cloudflare-dns.com/dns-query, https://dns.google/dns-query, https://dns.alidns.com/dns-query, https://doh.pub/dns-query]
-  fallback-filter: { geoip: false, ipcidr: [240.0.0.0/4] }
+  default-nameserver: [223.5.5.5, 119.29.29.29]
+  proxy-server-nameserver: [223.5.5.5, 119.29.29.29]
+  nameserver-policy:
+    "geosite:cn,private":
+      - https://dns.alidns.com/dns-query#DIRECT
+      - https://doh.pub/dns-query#DIRECT
+
+    # AI 流量 rules 固定美国链，DNS 也固定美国（不受 DNS-REGION 影响）
+    "rule-set:Claude,Chatgpt,Gemini,Google,Grok":
+      - https://cloudflare-dns.com/dns-query#CHAIN-PROXY-US
+      - https://dns.google/dns-query#CHAIN-PROXY-US
+  # 其余境外域名：走面板 DNS-REGION（需与 FINAL 所选区域链一致）
+  nameserver:
+    - https://cloudflare-dns.com/dns-query#DNS-REGION
+    - https://dns.google/dns-query#DNS-REGION
+  fake-ip-filter: ["*.lan", localhost.ptlogin2.qq.com, dns.msftncsi.com, "*.srv.nintendo.net", "*.stun.playstation.net", "xbox.*.microsoft.com", "*.xboxlive.com", "host.docker.internal", "*.internal", "*.localhost", "time.*.com", "time.*.gov", "ntp.*.com", "*.ntp.org"]
+  fallback:
+    - https://cloudflare-dns.com/dns-query#DNS-REGION
+    - https://dns.google/dns-query#DNS-REGION
+    - https://dns.alidns.com/dns-query#DIRECT
+    - https://doh.pub/dns-query#DIRECT
+  fallback-filter: { geoip: true, geoip-code: CN, ipcidr: [240.0.0.0/4] }
 
 sniffer:
   enable: true
@@ -73,10 +89,23 @@ proxy-providers:
         - ClashforWindows/0.20.39
       Accept:
         - "*/*"
-  myproxy:
+  us:
     type: http
     interval: 43200
-    path: ./providers/myai.yaml
+    path: ./providers/us.yaml
+    health-check:
+      enable: true
+      url: http://cp.cloudflare.com/generate_204
+      interval: 600
+    header:
+      User-Agent:
+        - ClashforWindows/0.20.39
+      Accept:
+        - "*/*"
+  jp:
+    type: http
+    interval: 43200
+    path: ./providers/jp.yaml
     health-check:
       enable: true
       url: http://cp.cloudflare.com/generate_204
@@ -97,10 +126,19 @@ proxy-groups:
     tolerance: 50
     lazy: true
 
-  - name: MYPROXY
+  - name: US
     type: url-test
     use:
-      - myproxy
+      - us
+    url: "http://cp.cloudflare.com/generate_204"
+    interval: 300
+    tolerance: 50
+    lazy: true
+
+  - name: JP
+    type: url-test
+    use:
+      - jp
     url: "http://cp.cloudflare.com/generate_204"
     interval: 300
     tolerance: 50
@@ -112,7 +150,7 @@ proxy-groups:
 
   - name: YouTube
     type: select
-    proxies: [MYPROXY, SSRDOG]
+    proxies: [US, SSRDOG]
 
   - name: CHAIN-PROXY-US
     type: url-test
@@ -136,23 +174,25 @@ proxy-groups:
     lazy: true
     hidden: true
 
-  - name: CHAIN-PROXY
+  # 面板手动选择与当前境外出口一致；未命中 nameserver-policy 的域名均走此组
+  - name: DNS-REGION
     type: select
-    proxies:
-      - HOME-SOCKS5-US
-      - HOME-SOCKS5-SSRDOG-US
-      - HOME-SOCKS5-DE
-      - HOME-SOCKS5-SSRDOG-DE
+    proxies: [CHAIN-PROXY-US, US, JP, CHAIN-PROXY-DE]
+
+  - name: AI-PROXY
+    type: fallback
+    proxies: [CHAIN-PROXY-US, US, JP, SSRDOG, DIRECT]
+    url: "http://cp.cloudflare.com/generate_204"
+    interval: 60
+    lazy: false
 
   - name: FINAL
     type: select
-    proxies: [MYPROXY, SSRDOG, CHAIN-PROXY-US, CHAIN-PROXY-DE, DIRECT]
+    proxies: [SSRDOG, US, JP, CHAIN-PROXY-US, CHAIN-PROXY-DE, DIRECT]
 
 rule-providers:
   DIRECT: { type: file, behavior: classical, path: ./ruleset/DIRECT.yml }
   REJECT: { type: file, behavior: classical, path: ./ruleset/REJECT.yml }
-  DNS_DIRECT: { type: file, behavior: classical, path: ./ruleset/DNS_DIRECT.yml }
-  DNS_PROXY: { type: file, behavior: classical, path: ./ruleset/DNS_PROXY.yml }
   Chatgpt: { type: file, behavior: classical, path: ./ruleset/Chatgpt.yml }
   Claude: { type: file, behavior: classical, path: ./ruleset/Claude.yml }
   Gemini: { type: file, behavior: classical, path: ./ruleset/Gemini.yml }
@@ -164,8 +204,6 @@ rules:
 
   - "DOMAIN,dog.ssrdog.com,SSRDOG"
   - "RULE-SET,REJECT,REJECT"
-  - "RULE-SET,DNS_DIRECT,DIRECT"
-  - "RULE-SET,DNS_PROXY,CHAIN-PROXY"
   - "RULE-SET,Claude,CHAIN-PROXY-US"
   - "RULE-SET,Chatgpt,CHAIN-PROXY-US"
   - "RULE-SET,Gemini,CHAIN-PROXY-US"

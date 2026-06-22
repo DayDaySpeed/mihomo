@@ -1,6 +1,9 @@
+.venv/
 secrets.yaml
+chain-proxy-us.yaml
 backup_ssrdog.yaml
 ssrdog.yaml
 ssrdog.merged.yaml
 providers/
 ruleset/ChinaMax.yml
+geodata/
