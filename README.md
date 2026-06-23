@@ -62,6 +62,8 @@
 
 ### 3.1 控制面板与入口
 
+![MetaCubeXD 控制面板](proxy.png)
+
 - `**external-controller`**：`0.0.0.0:9090` — REST API / 面板。
 - `**secret**`：API 鉴权，在 `secrets.yaml` 中配置（请自行保管，文档不展开）。
 - `**external-ui**`：Web UI 静态资源路径（示例为 `/var/lib/mihomo/ui`，需与安装环境一致）。
