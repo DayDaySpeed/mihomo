@@ -18,6 +18,7 @@
 | [七、运维与排错](#七运维与排错)   | [7. Operations and troubleshooting](#7-operations-and-troubleshooting-en) |
 | [八、多区域 DNS 对齐](#八多区域-dns-对齐) | [8. Multi-region DNS](#8-multi-region-dns-en)                             |
 | [九、VPS 邮件中转](#九vps-邮件中转) | —                                                                         |
+| [十、自建 VPS 节点](#十自建-vps-节点) | [10. Self-hosted VPS nodes](#10-self-hosted-vps-nodes-en)                 |
 
 
 ---
@@ -48,6 +49,9 @@
 | `providers/ssrdog.yaml` / `providers/us.yaml` / `providers/jp.yaml` | 由 Mihomo 从订阅拉取后写入（路径在配置中定义）      |
 | `yaml.sh`                                       | 将配置与规则集同步到系统目录并重启服务              |
 | `scripts/vps-smtp-relay.sh`                     | 在海外 VPS 上部署 Postfix 邮件中转（Gmail 发信）   |
+| `scripts/vps-3x-ui.sh`                          | 在海外 VPS 上一键安装 3x-ui（橙云 + VLESS WS）   |
+| `scripts/vps-3x-ui.env.example`                 | 3x-ui 域名/CF Token 模板；复制为 `vps-3x-ui.env`（**勿提交**） |
+| `docs/vps-3x-ui.md`                             | 自建节点安装、Cloudflare、与 Mihomo `jp` 订阅对接  |
 | `docs/multi-region-dns.md`                      | 多区域出口与 DNS 对齐架构说明                   |
 | `docs/smtp-relay.md`                            | 邮件中转安装、客户端配置与排错说明                 |
 | `ruleset/PROXY-JP.yml` / `PROXY-DE.yml`         | 非默认区域域名（可留空；流量与 DNS 共用）           |
@@ -103,7 +107,7 @@
 | ------------- | --------------------------------------------- |
 | `**ssrdog**`  | HTTP 订阅，拉取 SSRDOG 节点；健康检查 `generate_204`      |
 | `**us**` | HTTP 订阅（Statry 等）；健康检查 `generate_204`              |
-| `**jp**`      | 日本 VLESS 订阅（URL 在 `secrets.yaml`）；健康检查 `generate_204` |
+| `**jp**`      | 日本 VLESS 订阅（URL 在 `secrets.yaml`）；可为 **3x-ui 自建** 或第三方；健康检查 `generate_204` |
 
 
 更新周期、路径 `./providers/*.yaml` 与 `User-Agent` 等在 `ssrdog.yaml` 内可改；**订阅 URL** 在 `secrets.yaml`。
@@ -231,6 +235,23 @@ Gmail 的 SMTP（587/465）在国内直连及多数代理链路上不可用。�
 
 ---
 
+## 十、自建 VPS 节点
+
+若你有海外 VPS，可用 **3x-ui + Cloudflare 橙云** 自建日本（或其他区域）节点，替代或补充商业订阅。客户端只连接 **域名**，不暴露 VPS IP；面板经 **SSH 隧道** 管理。
+
+| 步骤 | 说明 |
+|---|---|
+| 1 | `cp scripts/vps-3x-ui.env.example scripts/vps-3x-ui.env`，填入域名、邮箱、CF Token |
+| 2 | `scp scripts/vps-3x-ui.sh scripts/vps-3x-ui.env root@<VPS>:/root/` 后执行安装 |
+| 3 | 在面板添加 VLESS + WebSocket inbound，开启橙云与 WebSockets |
+| 4 | 将面板订阅 URL 写入 `secrets.yaml` 的 `proxy-providers.jp`，再 `bash yaml.sh` |
+
+完整说明（Cloudflare 设置、Inbound 参数、与 `JP` / `CHAIN-PROXY-JP` 对接、排错）见 **[docs/vps-3x-ui.md](docs/vps-3x-ui.md)**。
+
+**勿提交**：`scripts/vps-3x-ui.env`、根目录遗留的 `vps.sh`（已 gitignore）。
+
+---
+
 # English sections
 
 ## 1. Overview {#1-overview-en}
@@ -260,6 +281,9 @@ Goals:
 | `ruleset/ChinaMax.yml`                         | Large CN list; auto-fetched by `yaml.sh` if missing          |
 | `providers/ssrdog.yaml`, `providers/us.yaml`, `providers/jp.yaml` | Fetched and written by Mihomo (paths defined in config)        |
 | `yaml.sh`                                      | Copies config + rules to system paths and restarts the service |
+| `scripts/vps-3x-ui.sh`                         | One-shot 3x-ui install on a VPS (Cloudflare + VLESS WS)      |
+| `scripts/vps-3x-ui.env.example`                | Template for domain / CF token; copy to `vps-3x-ui.env` (gitignored) |
+| `docs/vps-3x-ui.md`                            | Self-hosted node setup and Mihomo `jp` provider integration  |
 
 
 Rule providers reference `**./ruleset/...`**. The Mihomo working directory must resolve that path (this repo uses `yaml.sh` to mirror files under `/var/lib/mihomo/ruleset/`).
@@ -335,6 +359,14 @@ bash yaml.sh
 ## 8. Multi-region DNS {#8-multi-region-dns-en}
 
 Regional DNS uses **`DNS-REGION`** (manual sync with `FINAL`); AI DNS stays US. Details: **[docs/multi-region-dns.md](docs/multi-region-dns.md)**.
+
+---
+
+## 10. Self-hosted VPS nodes {#10-self-hosted-vps-nodes-en}
+
+Deploy **3x-ui** on your own VPS behind **Cloudflare orange cloud** (VLESS + WebSocket). Clients use the **domain name only**; the panel is reachable via **SSH tunnel** only. Wire the panel subscription URL into `secrets.yaml` → `proxy-providers.jp`, then run `yaml.sh`.
+
+See **[docs/vps-3x-ui.md](docs/vps-3x-ui.md)**. Keep `scripts/vps-3x-ui.env` out of git (listed in `.gitignore`).
 
 ---
 

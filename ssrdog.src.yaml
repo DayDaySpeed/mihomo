@@ -179,12 +179,6 @@ proxy-groups:
     type: select
     proxies: [CHAIN-PROXY-US, US, JP, CHAIN-PROXY-DE]
 
-  - name: AI-PROXY
-    type: fallback
-    proxies: [CHAIN-PROXY-US, US, JP, SSRDOG, DIRECT]
-    url: "http://cp.cloudflare.com/generate_204"
-    interval: 60
-    lazy: false
 
   - name: FINAL
     type: select

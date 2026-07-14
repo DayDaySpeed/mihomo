@@ -7,3 +7,7 @@ ssrdog.merged.yaml
 providers/
 ruleset/ChinaMax.yml
 geodata/
+scripts/vps-3x-ui.env
+vps.sh
+vps.env
+docs/
