@@ -53,6 +53,11 @@ dns:
     "rule-set:Claude,Chatgpt,Gemini,Google,Grok":
       - https://cloudflare-dns.com/dns-query#CHAIN-PROXY-US
       - https://dns.google/dns-query#CHAIN-PROXY-US
+
+    # 加密货币：DNS 经 US 取真实 IP，流量直连（不受 fallback 影响）
+    "rule-set:Crypto":
+      - https://cloudflare-dns.com/dns-query#US
+      - https://dns.google/dns-query#US
   # 其余境外域名：走面板 DNS-REGION（需与 FINAL 所选区域链一致）
   nameserver:
     - https://cloudflare-dns.com/dns-query#DNS-REGION
@@ -150,7 +155,7 @@ proxy-groups:
 
   - name: YouTube
     type: select
-    proxies: [US, SSRDOG]
+    proxies: [US, JP, SSRDOG]
 
   - name: CHAIN-PROXY-US
     type: url-test
@@ -194,10 +199,12 @@ rule-providers:
   Grok: { type: file, behavior: classical, path: ./ruleset/Grok.yml }
   YouTube: { type: file, behavior: classical, path: ./ruleset/YouTube.yml }
   ChinaMax: { type: file, behavior: classical, path: ./ruleset/ChinaMax.yml }
+  Crypto: { type: file, behavior: classical, path: ./ruleset/crpyto.yml }
 rules:
 
   - "DOMAIN,dog.ssrdog.com,SSRDOG"
   - "RULE-SET,REJECT,REJECT"
+  - "RULE-SET,Crypto,DIRECT"
   - "RULE-SET,Claude,CHAIN-PROXY-US"
   - "RULE-SET,Chatgpt,CHAIN-PROXY-US"
   - "RULE-SET,Gemini,CHAIN-PROXY-US"
